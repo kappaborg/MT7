@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import struct
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
@@ -202,30 +205,40 @@ def main() -> None:
     )
     parser.add_argument(
         "--annotations",
-        default="/Users/kappasutra/MT7/annotations/instances_default.json",
+        required=True,
         help="Path to the source COCO annotations JSON file.",
     )
     parser.add_argument(
         "--frames-root",
-        default="/Users/kappasutra/MT7/FRAMED-FINAL-INSALLAH",
+        required=True,
         help="Root directory containing the actual image frames.",
     )
     parser.add_argument(
         "--output",
-        default="/Users/kappasutra/MT7/annotations/instances_reconciled.json",
+        required=True,
         help="Path to write the reconciled COCO annotations JSON file.",
     )
+    parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
     args = parser.parse_args()
 
-    summary = reconcile_dataset(
-        annotations_path=Path(args.annotations),
-        frames_root=Path(args.frames_root),
-        output_path=Path(args.output),
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s: %(message)s",
     )
 
-    print("Reconciliation summary")
+    try:
+        summary = reconcile_dataset(
+            annotations_path=Path(args.annotations),
+            frames_root=Path(args.frames_root),
+            output_path=Path(args.output),
+        )
+    except ValueError as exc:
+        logger.error("%s", exc)
+        raise SystemExit(1) from None
+
+    logger.info("Reconciliation summary")
     for key, value in summary.items():
-        print(f"{key}: {value}")
+        logger.info("%s: %s", key, value)
 
 
 if __name__ == "__main__":

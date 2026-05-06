@@ -428,7 +428,6 @@
       const tracks = selectedTracks();
       const scaledPoints = points => points.map(([x, y]) => [x * scaleX, y * scaleY]);
       const historyWindow = 10;
-      const futureWindow = 10;
 
       if (showAllTracks.checked && currentTrackValue !== 'all') {
         const others = currentSequence().tracks.filter(track => String(track.track_id) !== currentTrackValue);

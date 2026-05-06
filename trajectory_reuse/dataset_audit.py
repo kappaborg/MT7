@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def _load_json(path: Path) -> Dict:
@@ -86,35 +89,45 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Audit a COCO-style frame and annotation dataset.")
     parser.add_argument(
         "--annotations",
-        default="/Users/kappasutra/MT7/annotations/instances_default.json",
+        required=True,
         help="Path to the COCO annotations JSON file.",
     )
     parser.add_argument(
         "--frames-root",
-        default="/Users/kappasutra/MT7/FRAMED-FINAL-INSALLAH",
+        required=True,
         help="Root directory that contains the image files referenced by the annotations.",
     )
+    parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
     args = parser.parse_args()
 
-    summary = audit_dataset(
-        annotations_path=Path(args.annotations),
-        frames_root=Path(args.frames_root),
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s: %(message)s",
     )
 
-    print("Dataset audit summary")
-    print(f"images_total: {summary['images_total']}")
-    print(f"images_existing: {summary['images_existing']}")
-    print(f"images_missing: {summary['images_missing']}")
-    print(f"annotations_total: {summary['annotations_total']}")
-    print(f"frames_with_annotations: {summary['frames_with_annotations']}")
-    print(f"max_annotations_in_frame: {summary['max_annotations_in_frame']}")
-    print(f"categories: {summary['categories']}")
-    print(f"has_track_id: {summary['has_track_id']}")
-    print(f"annotation_keys: {summary['annotation_keys']}")
-    print(f"annotation_density_top10: {_format_pairs(summary['annotation_density'])}")
-    print(f"top_sequences_by_images: {_format_pairs(summary['top_sequences_by_images'])}")
-    print(f"top_sequences_by_annotations: {_format_pairs(summary['top_sequences_by_annotations'])}")
-    print(f"sample_missing_images: {summary['sample_missing_images']}")
+    try:
+        summary = audit_dataset(
+            annotations_path=Path(args.annotations),
+            frames_root=Path(args.frames_root),
+        )
+    except ValueError as exc:
+        logger.error("%s", exc)
+        raise SystemExit(1) from None
+
+    logger.info("Dataset audit summary")
+    logger.info("images_total: %s", summary['images_total'])
+    logger.info("images_existing: %s", summary['images_existing'])
+    logger.info("images_missing: %s", summary['images_missing'])
+    logger.info("annotations_total: %s", summary['annotations_total'])
+    logger.info("frames_with_annotations: %s", summary['frames_with_annotations'])
+    logger.info("max_annotations_in_frame: %s", summary['max_annotations_in_frame'])
+    logger.info("categories: %s", summary['categories'])
+    logger.info("has_track_id: %s", summary['has_track_id'])
+    logger.info("annotation_keys: %s", summary['annotation_keys'])
+    logger.info("annotation_density_top10: %s", _format_pairs(summary['annotation_density']))
+    logger.info("top_sequences_by_images: %s", _format_pairs(summary['top_sequences_by_images']))
+    logger.info("top_sequences_by_annotations: %s", _format_pairs(summary['top_sequences_by_annotations']))
+    logger.info("sample_missing_images: %s", summary['sample_missing_images'])
 
 
 if __name__ == "__main__":

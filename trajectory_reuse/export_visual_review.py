@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Dict, List
+
+logger = logging.getLogger(__name__)
 
 
 def _relative_image_path(output_path: Path, frames_root: Path, file_name: str) -> str:
@@ -223,12 +226,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--evaluation",
-        default="/Users/kappasutra/MT7/annotations/predictor_evaluation.json",
+        required=True,
         help="Path to the predictor evaluation JSON file.",
     )
     parser.add_argument(
         "--output",
-        default="/Users/kappasutra/MT7/annotations/predictor_review.html",
+        required=True,
         help="Path to write the HTML review page.",
     )
     parser.add_argument(
@@ -237,16 +240,27 @@ def main() -> None:
         default=12,
         help="Number of best and worst samples to include.",
     )
+    parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
     args = parser.parse_args()
 
-    summary = export_visual_review(
-        evaluation_path=Path(args.evaluation),
-        output_path=Path(args.output),
-        sample_limit=args.sample_limit,
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s: %(message)s",
     )
-    print("Visual review export summary")
+
+    try:
+        summary = export_visual_review(
+            evaluation_path=Path(args.evaluation),
+            output_path=Path(args.output),
+            sample_limit=args.sample_limit,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        logger.error("%s", exc)
+        raise SystemExit(1) from None
+
+    logger.info("Visual review export summary")
     for key, value in summary.items():
-        print(f"{key}: {value}")
+        logger.info("%s: %s", key, value)
 
 
 if __name__ == "__main__":

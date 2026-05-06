@@ -1,0 +1,10 @@
+{
+  "EO": {
+    "max_gap": 8,
+    "max_distance": 150.0
+  },
+  "IR": {
+    "max_gap": 6,
+    "max_distance": 90.0
+  }
+}

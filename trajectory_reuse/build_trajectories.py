@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,11 +10,28 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from .dataset_loader import DetectionRecord, FrameRecord, build_frame_records, group_frames_by_sequence
 
+logger = logging.getLogger(__name__)
 
 DEFAULT_MODALITY_CONFIG = {
     "EO": {"max_gap": 8, "max_distance": 150.0},
     "IR": {"max_gap": 6, "max_distance": 90.0},
 }
+
+# Candidate-score thresholds
+MAX_AREA_RATIO = 3.5         # reject match if bbox area ratio exceeds this
+GAP_PENALTY_FACTOR = 4.0     # cost per missed frame
+AREA_PENALTY_FACTOR = 8.0    # cost per unit of area divergence above 1×
+LAST_DISTANCE_WEIGHT = 0.25  # blend weight for raw last-center distance in score
+
+
+def _load_modality_config(config_path: Optional[Path]) -> Dict:
+    """Load modality tracking config from JSON, falling back to the built-in defaults."""
+    if config_path is not None:
+        if not config_path.exists():
+            raise ValueError(f"Modality config file not found: {config_path}")
+        with config_path.open() as file:
+            return json.load(file)
+    return DEFAULT_MODALITY_CONFIG
 
 
 @dataclass
@@ -66,12 +84,12 @@ def _candidate_score(
 
     last_distance = _distance(track.last_center, detection.center)
     area_ratio = _area_ratio(track.last_area, detection.area)
-    if area_ratio > 3.5:
+    if area_ratio > MAX_AREA_RATIO:
         return None
 
-    gap_penalty = frame_gap * 4.0
-    area_penalty = max(0.0, area_ratio - 1.0) * 8.0
-    return predicted_distance + 0.25 * last_distance + gap_penalty + area_penalty
+    gap_penalty = frame_gap * GAP_PENALTY_FACTOR
+    area_penalty = max(0.0, area_ratio - 1.0) * AREA_PENALTY_FACTOR
+    return predicted_distance + LAST_DISTANCE_WEIGHT * last_distance + gap_penalty + area_penalty
 
 
 def _match_detections(
@@ -310,6 +328,17 @@ def _build_tracks_for_sequence(
     return completed_tracks
 
 
+def _extract_modality_offsets(modality_cfg: Dict) -> Dict[str, tuple]:
+    """Pull center_offset_x/y from each modality entry; skip entries with zero offset."""
+    offsets = {}
+    for mod, cfg in modality_cfg.items():
+        dx = float(cfg.get("center_offset_x", 0.0))
+        dy = float(cfg.get("center_offset_y", 0.0))
+        if dx != 0.0 or dy != 0.0:
+            offsets[mod] = (dx, dy)
+    return offsets
+
+
 def build_trajectory_dataset(
     annotations_path: Path,
     frames_root: Path,
@@ -322,11 +351,23 @@ def build_trajectory_dataset(
     eo_max_distance: Optional[float] = None,
     ir_max_gap: Optional[int] = None,
     ir_max_distance: Optional[float] = None,
+    modality_config_path: Optional[Path] = None,
+    apply_modality_offsets: bool = True,
 ) -> Dict[str, int]:
+    modality_cfg = _load_modality_config(modality_config_path)
+    modality_offsets = _extract_modality_offsets(modality_cfg) if apply_modality_offsets else {}
+
+    if modality_offsets:
+        for mod, (dx, dy) in modality_offsets.items():
+            logger.info("Applying %s centre correction: dx=%+.4f  dy=%+.4f", mod, dx, dy)
+    elif apply_modality_offsets:
+        logger.debug("No centre offsets configured in modality config.")
+
     frames = build_frame_records(
         annotations_path=annotations_path,
         frames_root=frames_root,
         category_filter=[category_name],
+        modality_offsets=modality_offsets,
     )
     grouped = group_frames_by_sequence(frames)
 
@@ -337,9 +378,11 @@ def build_trajectory_dataset(
     track_counts_by_modality: Dict[str, int] = {}
     point_counts_by_modality: Dict[str, int] = {}
 
-    for sequence_key, sequence_frames in sorted(grouped.items()):
+    sorted_sequences = sorted(grouped.items())
+    total_sequences = len(sorted_sequences)
+    for done, (sequence_key, sequence_frames) in enumerate(sorted_sequences, 1):
         modality = sequence_frames[0].modality
-        modality_config = DEFAULT_MODALITY_CONFIG.get(
+        modality_config = modality_cfg.get(
             modality,
             {"max_gap": max_gap, "max_distance": max_distance},
         )
@@ -386,6 +429,11 @@ def build_trajectory_dataset(
                 "tracks": tracks,
             }
         )
+        if total_sequences > 0 and (done == total_sequences or done % max(1, total_sequences // 10) == 0):
+            logger.info(
+                "Processed %d/%d sequences (%.0f%%)",
+                done, total_sequences, done / total_sequences * 100,
+            )
 
     payload = {
         "source_annotations": str(annotations_path),
@@ -395,22 +443,11 @@ def build_trajectory_dataset(
         "max_distance": max_distance,
         "min_track_length": min_track_length,
         "modality_tracking_config": {
-            "EO": {
-                "max_gap": eo_max_gap if eo_max_gap is not None else DEFAULT_MODALITY_CONFIG["EO"]["max_gap"],
-                "max_distance": (
-                    eo_max_distance
-                    if eo_max_distance is not None
-                    else DEFAULT_MODALITY_CONFIG["EO"]["max_distance"]
-                ),
-            },
-            "IR": {
-                "max_gap": ir_max_gap if ir_max_gap is not None else DEFAULT_MODALITY_CONFIG["IR"]["max_gap"],
-                "max_distance": (
-                    ir_max_distance
-                    if ir_max_distance is not None
-                    else DEFAULT_MODALITY_CONFIG["IR"]["max_distance"]
-                ),
-            },
+            modality: {
+                "max_gap": modality_cfg[modality]["max_gap"],
+                "max_distance": modality_cfg[modality]["max_distance"],
+            }
+            for modality in modality_cfg
         },
         "sequence_count": len(sequences),
         "track_count": total_tracks,
@@ -439,17 +476,17 @@ def main() -> None:
     )
     parser.add_argument(
         "--annotations",
-        default="/Users/kappasutra/MT7/annotations/instances_reconciled.json",
+        required=True,
         help="Path to the reconciled COCO annotations JSON file.",
     )
     parser.add_argument(
         "--frames-root",
-        default="/Users/kappasutra/MT7/FRAMED-FINAL-INSALLAH",
+        required=True,
         help="Root directory containing the actual image frames.",
     )
     parser.add_argument(
         "--output",
-        default="/Users/kappasutra/MT7/annotations/drone_trajectories.json",
+        required=True,
         help="Path to write the derived trajectory dataset.",
     )
     parser.add_argument(
@@ -499,25 +536,47 @@ def main() -> None:
         default=None,
         help="Optional IR-only maximum center distance override.",
     )
+    parser.add_argument(
+        "--modality-config",
+        default=None,
+        help="Optional path to a JSON file overriding the per-modality tracking config.",
+    )
+    parser.add_argument(
+        "--no-ir-correction",
+        action="store_true",
+        help="Disable modality centre-offset correction (useful for debugging the raw shift).",
+    )
+    parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
     args = parser.parse_args()
 
-    summary = build_trajectory_dataset(
-        annotations_path=Path(args.annotations),
-        frames_root=Path(args.frames_root),
-        output_path=Path(args.output),
-        category_name=args.category,
-        max_gap=args.max_gap,
-        max_distance=args.max_distance,
-        min_track_length=args.min_track_length,
-        eo_max_gap=args.eo_max_gap,
-        eo_max_distance=args.eo_max_distance,
-        ir_max_gap=args.ir_max_gap,
-        ir_max_distance=args.ir_max_distance,
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s: %(message)s",
     )
 
-    print("Trajectory build summary")
+    try:
+        summary = build_trajectory_dataset(
+            annotations_path=Path(args.annotations),
+            frames_root=Path(args.frames_root),
+            output_path=Path(args.output),
+            category_name=args.category,
+            max_gap=args.max_gap,
+            max_distance=args.max_distance,
+            min_track_length=args.min_track_length,
+            eo_max_gap=args.eo_max_gap,
+            eo_max_distance=args.eo_max_distance,
+            ir_max_gap=args.ir_max_gap,
+            ir_max_distance=args.ir_max_distance,
+            modality_config_path=Path(args.modality_config) if args.modality_config else None,
+            apply_modality_offsets=not args.no_ir_correction,
+        )
+    except ValueError as exc:
+        logger.error("%s", exc)
+        raise SystemExit(1) from None
+
+    logger.info("Trajectory build summary")
     for key, value in summary.items():
-        print(f"{key}: {value}")
+        logger.info("%s: %s", key, value)
 
 
 if __name__ == "__main__":

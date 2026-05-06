@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(pip3 install *)",
+      "Bash(pip3 show *)",
+      "Bash(/opt/homebrew/bin/pytest *)",
+      "Bash(curl -s http://localhost:8080/api/status)",
+      "Bash(curl -s -o /dev/null -w \"GET / HTTP status: %{http_code}\\\\n\" http://localhost:8080/)",
+      "Bash(curl -s -o /dev/null -w \"GET frame HTTP status: %{http_code}\\\\n\" \"http://localhost:8080/Frames/18.12.25/EO/N30/N30_frame_000000.jpg\")",
+      "Bash(kill %1)"
+    ]
+  }
+}

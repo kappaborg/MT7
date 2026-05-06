@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from .dataset_loader import parse_frame_name
+
+logger = logging.getLogger(__name__)
+
+_TEMPLATE_PATH = Path(__file__).parent / "viewer_template.html"
 
 
 def _load_json(path: Path) -> Dict:
@@ -13,7 +18,9 @@ def _load_json(path: Path) -> Dict:
         return json.load(file)
 
 
-def _image_src(frames_root: Path, file_name: str) -> str:
+def _image_src(frames_root: Path, file_name: str, frames_url_prefix: Optional[str] = None) -> str:
+    if frames_url_prefix is not None:
+        return f"{frames_url_prefix.rstrip('/')}/{file_name}"
     image_path = frames_root / file_name
     return image_path.resolve().as_uri()
 
@@ -24,13 +31,16 @@ def export_live_viewer(
     frames_root: Path,
     output_path: Path,
     evaluation_path: Optional[Path] = None,
+    frames_url_prefix: Optional[str] = None,
 ) -> Dict[str, int]:
     reconciled = _load_json(reconciled_annotations_path)
     trajectories = _load_json(trajectories_path)
     evaluation = _load_json(evaluation_path) if evaluation_path and evaluation_path.exists() else {}
 
     sequences_by_key: Dict[str, Dict] = {}
-    for image in reconciled.get("images", []):
+    all_images = reconciled.get("images", [])
+    total_images = len(all_images)
+    for img_idx, image in enumerate(all_images, 1):
         file_name = str(image["file_name"])
         parsed = parse_frame_name(file_name)
         if parsed is None:
@@ -51,14 +61,23 @@ def export_live_viewer(
             {
                 "frame_number": int(parsed["frame_number"]),
                 "file_name": file_name,
-                "image_src": _image_src(frames_root, file_name),
+                "image_src": _image_src(frames_root, file_name, frames_url_prefix),
             }
         )
+        if total_images > 0 and (
+            img_idx == total_images or img_idx % max(1, total_images // 10) == 0
+        ):
+            logger.info(
+                "Indexed %d/%d images (%.0f%%)",
+                img_idx, total_images, img_idx / total_images * 100,
+            )
 
     for sequence in sequences_by_key.values():
         sequence["frames"].sort(key=lambda item: (item["frame_number"], item["file_name"]))
 
-    for sequence in trajectories.get("sequences", []):
+    all_traj_sequences = trajectories.get("sequences", [])
+    total_traj = len(all_traj_sequences)
+    for traj_idx, sequence in enumerate(all_traj_sequences, 1):
         sequence_key = str(sequence["sequence_key"])
         if sequence_key not in sequences_by_key:
             continue
@@ -90,6 +109,13 @@ def export_live_viewer(
         sequences_by_key[sequence_key]["tracks"] = sorted(tracks, key=lambda item: item["track_id"])
         if "tracking_config" in sequence:
             sequences_by_key[sequence_key]["tracking_config"] = dict(sequence["tracking_config"])
+        if total_traj > 0 and (
+            traj_idx == total_traj or traj_idx % max(1, total_traj // 10) == 0
+        ):
+            logger.info(
+                "Processed %d/%d trajectory sequences (%.0f%%)",
+                traj_idx, total_traj, traj_idx / total_traj * 100,
+            )
 
     evaluation_lookup: Dict[str, Dict] = {}
     for sample in evaluation.get("samples", []):
@@ -119,595 +145,11 @@ def export_live_viewer(
         "evaluation_lookup": evaluation_lookup,
     }
 
-    html = f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    :root {{
-      --bg: #071018;
-      --panel: rgba(12, 20, 31, 0.94);
-      --panel-2: rgba(16, 28, 42, 0.92);
-      --text: #eff6ff;
-      --muted: #9cb4cf;
-      --accent: #4cc9f0;
-      --track: #80ed99;
-      --future: #ff6b6b;
-      --target: #ffd166;
-      --grid: rgba(255,255,255,0.06);
-      --border: rgba(255,255,255,0.08);
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      background:
-        radial-gradient(circle at top left, rgba(76,201,240,0.18), transparent 28%),
-        radial-gradient(circle at top right, rgba(255,107,107,0.16), transparent 24%),
-        linear-gradient(180deg, #071018 0%, #03070b 100%);
-      color: var(--text);
-      font-family: ui-sans-serif, system-ui, sans-serif;
-    }}
-    .layout {{
-      display: grid;
-      grid-template-columns: 360px 1fr;
-      min-height: 100vh;
-    }}
-    .sidebar {{
-      padding: 18px;
-      border-right: 1px solid var(--border);
-      background: var(--panel);
-    }}
-    .viewer {{
-      padding: 18px;
-    }}
-    h1 {{
-      margin: 0 0 8px;
-      font-size: 28px;
-    }}
-    .summary {{
-      color: var(--muted);
-      margin-bottom: 18px;
-      font-size: 14px;
-      line-height: 1.5;
-    }}
-    .controls {{
-      display: grid;
-      gap: 14px;
-    }}
-    label {{
-      display: block;
-      font-size: 13px;
-      color: var(--muted);
-      margin-bottom: 6px;
-    }}
-    select, input[type="range"], button {{
-      width: 100%;
-    }}
-    select, button {{
-      background: var(--panel-2);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 10px 12px;
-      font-size: 14px;
-    }}
-    .inline {{
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-    }}
-    .checks {{
-      display: grid;
-      gap: 8px;
-      padding: 12px;
-      border: 1px solid var(--border);
-      background: var(--panel-2);
-      border-radius: 14px;
-    }}
-    .checks label {{
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      margin: 0;
-      color: var(--text);
-    }}
-    .stats {{
-      margin-top: 16px;
-      padding: 14px;
-      border-radius: 16px;
-      background: var(--panel-2);
-      border: 1px solid var(--border);
-      font-size: 14px;
-      line-height: 1.6;
-      color: var(--muted);
-    }}
-    .stage {{
-      position: relative;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 22px;
-      overflow: hidden;
-      border: 1px solid var(--border);
-      background: #000;
-      box-shadow: 0 24px 60px rgba(0,0,0,0.35);
-    }}
-    .stage img {{
-      display: block;
-      width: 100%;
-      height: auto;
-      max-height: calc(100vh - 120px);
-      object-fit: contain;
-      margin: 0 auto;
-    }}
-    .stage canvas {{
-      position: absolute;
-      left: 0;
-      top: 0;
-      pointer-events: none;
-    }}
-    .viewer-meta {{
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 12px;
-      color: var(--muted);
-      font-size: 14px;
-    }}
-    .legend {{
-      display: flex;
-      gap: 16px;
-      flex-wrap: wrap;
-      margin-top: 12px;
-      color: var(--muted);
-      font-size: 13px;
-    }}
-    .legend span::before {{
-      content: '';
-      display: inline-block;
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      margin-right: 6px;
-      vertical-align: middle;
-    }}
-    .legend-history::before {{ background: var(--accent); }}
-    .legend-track::before {{ background: var(--track); }}
-    .legend-bbox::before {{ background: #ffffff; }}
-    .legend-target::before {{ background: var(--target); }}
-    .legend-future::before {{ background: var(--future); }}
-    @media (max-width: 1100px) {{
-      .layout {{ grid-template-columns: 1fr; }}
-      .sidebar {{ border-right: 0; border-bottom: 1px solid var(--border); }}
-      .stage img {{ max-height: 70vh; }}
-    }}
-  </style>
-</head>
-<body>
-  <div class="layout">
-    <aside class="sidebar">
-      <div class="summary" id="summary"></div>
-      <div class="controls">
-        <div>
-          <label for="sequenceSelect">Sequence</label>
-          <select id="sequenceSelect"></select>
-        </div>
-        <div>
-          <label for="trackSelect">Track</label>
-          <select id="trackSelect"></select>
-        </div>
-        <div>
-          <label for="frameSlider">Frame</label>
-          <input id="frameSlider" type="range" min="0" max="0" value="0">
-        </div>
-        <div class="inline">
-          <button id="playButton" type="button">Play</button>
-          <select id="speedSelect">
-            <option value="120">Fast</option>
-            <option value="220" selected>Normal</option>
-            <option value="400">Slow</option>
-          </select>
-        </div>
-        <div class="checks">
-          <label><input id="showAllTracks" type="checkbox"> Show all tracks</label>
-          <label><input id="showPredictions" type="checkbox" checked> Show prediction overlay</label>
-          <label><input id="showFutureTrack" type="checkbox"> Show full selected track</label>
-        </div>
-      </div>
-      <div class="stats" id="stats"></div>
-    </aside>
-    <main class="viewer">
-      <div class="viewer-meta">
-        <div id="viewerTitle"></div>
-        <div id="viewerFrame"></div>
-      </div>
-      <div class="stage">
-        <img id="frameImage" alt="Selected frame">
-        <canvas id="overlay"></canvas>
-      </div>
-      <div class="legend">
-        <span class="legend-history">history</span>
-        <span class="legend-track">observed trail</span>
-        <span class="legend-bbox">current bbox</span>
-        <span class="legend-target">target future</span>
-        <span class="legend-future">predicted future</span>
-      </div>
-    </main>
-  </div>
-  <script>
-    const DATA = {json.dumps(payload)};
-
-    const sequenceSelect = document.getElementById('sequenceSelect');
-    const trackSelect = document.getElementById('trackSelect');
-    const frameSlider = document.getElementById('frameSlider');
-    const playButton = document.getElementById('playButton');
-    const speedSelect = document.getElementById('speedSelect');
-    const showAllTracks = document.getElementById('showAllTracks');
-    const showPredictions = document.getElementById('showPredictions');
-    const showFutureTrack = document.getElementById('showFutureTrack');
-    const summary = document.getElementById('summary');
-    const stats = document.getElementById('stats');
-    const viewerTitle = document.getElementById('viewerTitle');
-    const viewerFrame = document.getElementById('viewerFrame');
-    const frameImage = document.getElementById('frameImage');
-    const overlay = document.getElementById('overlay');
-
-    let currentSequenceIndex = 0;
-    let currentTrackValue = 'all';
-    let currentFrameIndex = 0;
-    let playTimer = null;
-
-    summary.textContent = `${{DATA.summary.sequence_count}} sequences, ${{DATA.summary.frame_count}} frames, ${{DATA.summary.track_count}} tracks, ${{DATA.summary.evaluation_sample_count}} predictor samples.`;
-
-    function drawPolyline(ctx, points, color, width, alpha = 1) {{
-      if (!points || points.length < 2) return;
-      ctx.save();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = width;
-      ctx.globalAlpha = alpha;
-      ctx.beginPath();
-      ctx.moveTo(points[0][0], points[0][1]);
-      for (let i = 1; i < points.length; i++) {{
-        ctx.lineTo(points[i][0], points[i][1]);
-      }}
-      ctx.stroke();
-      ctx.restore();
-    }}
-
-    function drawDashedPolyline(ctx, points, color, width, alpha = 1) {{
-      if (!points || points.length < 2) return;
-      ctx.save();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = width;
-      ctx.globalAlpha = alpha;
-      ctx.setLineDash([8, 6]);
-      ctx.beginPath();
-      ctx.moveTo(points[0][0], points[0][1]);
-      for (let i = 1; i < points.length; i++) {{
-        ctx.lineTo(points[i][0], points[i][1]);
-      }}
-      ctx.stroke();
-      ctx.restore();
-    }}
-
-    function drawPoints(ctx, points, color, radius, alpha = 1) {{
-      if (!points || !points.length) return;
-      ctx.save();
-      ctx.fillStyle = color;
-      ctx.globalAlpha = alpha;
-      for (const [x, y] of points) {{
-        ctx.beginPath();
-        ctx.arc(x, y, radius, 0, Math.PI * 2);
-        ctx.fill();
-      }}
-      ctx.restore();
-    }}
-
-    function drawBox(ctx, bbox, scaleX, scaleY, color) {{
-      if (!bbox) return;
-      const [x, y, w, h] = bbox;
-      ctx.save();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
-      ctx.globalAlpha = 0.95;
-      ctx.strokeRect(x * scaleX, y * scaleY, Math.max(2, w * scaleX), Math.max(2, h * scaleY));
-      ctx.restore();
-    }}
-
-    function centerToBox(center, bboxTemplate) {{
-      if (!bboxTemplate || bboxTemplate.length < 4) return null;
-      const width = bboxTemplate[2];
-      const height = bboxTemplate[3];
-      return [center[0] - width / 2, center[1] - height / 2, width, height];
-    }}
-
-    function drawCrosshair(ctx, point, color) {{
-      if (!point) return;
-      const [x, y] = point;
-      ctx.save();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(x - 8, y);
-      ctx.lineTo(x + 8, y);
-      ctx.moveTo(x, y - 8);
-      ctx.lineTo(x, y + 8);
-      ctx.stroke();
-      ctx.restore();
-    }}
-
-    function currentSequence() {{
-      return DATA.sequences[currentSequenceIndex];
-    }}
-
-    function currentFrame() {{
-      return currentSequence().frames[currentFrameIndex];
-    }}
-
-    function selectedTracks() {{
-      const sequence = currentSequence();
-      if (showAllTracks.checked || currentTrackValue === 'all') {{
-        return sequence.tracks;
-      }}
-      return sequence.tracks.filter(track => String(track.track_id) === currentTrackValue);
-    }}
-
-    function predictionKey(trackId, frameNumber) {{
-      return `${{currentSequence().sequence_key}}|${{trackId}}|${{frameNumber}}`;
-    }}
-
-    function populateSequences() {{
-      sequenceSelect.innerHTML = '';
-      DATA.sequences.forEach((sequence, index) => {{
-        const option = document.createElement('option');
-        option.value = String(index);
-        option.textContent = `${{sequence.sequence_key}} (${{sequence.frames.length}} frames)`;
-        sequenceSelect.appendChild(option);
-      }});
-      sequenceSelect.value = String(currentSequenceIndex);
-    }}
-
-    function populateTracks() {{
-      const sequence = currentSequence();
-      trackSelect.innerHTML = '';
-      const allOption = document.createElement('option');
-      allOption.value = 'all';
-      allOption.textContent = `All tracks (${{sequence.tracks.length}})`;
-      trackSelect.appendChild(allOption);
-      sequence.tracks.forEach(track => {{
-        const option = document.createElement('option');
-        option.value = String(track.track_id);
-        option.textContent = `Track ${{track.track_id}} (${{track.length}} pts)`;
-        trackSelect.appendChild(option);
-      }});
-      currentTrackValue = sequence.tracks.length ? String(sequence.tracks[0].track_id) : 'all';
-      trackSelect.value = currentTrackValue;
-    }}
-
-    function configureFrameSlider() {{
-      const sequence = currentSequence();
-      frameSlider.min = '0';
-      frameSlider.max = String(Math.max(0, sequence.frames.length - 1));
-      currentFrameIndex = Math.min(currentFrameIndex, sequence.frames.length - 1);
-      frameSlider.value = String(currentFrameIndex);
-    }}
-
-    function updateStats() {{
-      const sequence = currentSequence();
-      const frame = currentFrame();
-      const tracks = selectedTracks();
-      const frameNumber = frame.frame_number;
-      const visibleTracks = tracks.filter(track =>
-        track.points.some(point => point.frame_number === frameNumber)
-      );
-      let predictionText = 'No prediction sample for this frame.';
-      let imageText = '';
-      if (tracks.length === 1) {{
-        const evaluation = DATA.evaluation_lookup[predictionKey(tracks[0].track_id, frameNumber)];
-        if (evaluation) {{
-          predictionText = `Prediction: ADE ${{evaluation.ade.toFixed(2)}}, FDE ${{evaluation.fde.toFixed(2)}}, conf ${{evaluation.confidence.toFixed(2)}}, ${{evaluation.intention}}`;
-        }}
-      }}
-      if (frameImage.dataset.loadState === 'error') {{
-        imageText = `<div style="margin-top:8px;color:#ff9e9e;"><strong>Image load failed:</strong> ${{frame.image_src}}</div>`;
-      }}
-      const trackingConfig = sequence.tracking_config || {{}};
-      stats.innerHTML = `
-        <div><strong>Sequence:</strong> ${{sequence.sequence_key}}</div>
-        <div><strong>Modality:</strong> ${{sequence.modality}} | <strong>Frames:</strong> ${{sequence.frames.length}} | <strong>Tracks:</strong> ${{sequence.tracks.length}}</div>
-        <div><strong>Current frame number:</strong> ${{frameNumber}}</div>
-        <div><strong>Tracks hitting this frame:</strong> ${{visibleTracks.length}}</div>
-        <div><strong>Tracking config:</strong> gap ${{trackingConfig.max_gap ?? '-'}}, distance ${{trackingConfig.max_distance ?? '-'}}</div>
-        <div style="margin-top:8px;"><strong>${{predictionText}}</strong></div>
-        ${{imageText}}
-      `;
-    }}
-
-    function renderOverlay() {{
-      const image = frameImage;
-      const ctx = overlay.getContext('2d');
-      const stageRect = image.parentElement.getBoundingClientRect();
-      const imageRect = image.getBoundingClientRect();
-      const displayedWidth = Math.max(1, Math.round(imageRect.width));
-      const displayedHeight = Math.max(1, Math.round(imageRect.height));
-      overlay.style.left = `${{Math.round(imageRect.left - stageRect.left)}}px`;
-      overlay.style.top = `${{Math.round(imageRect.top - stageRect.top)}}px`;
-      overlay.style.width = `${{displayedWidth}}px`;
-      overlay.style.height = `${{displayedHeight}}px`;
-      overlay.width = displayedWidth;
-      overlay.height = displayedHeight;
-      ctx.clearRect(0, 0, overlay.width, overlay.height);
-      const scaleX = image.naturalWidth > 0 ? displayedWidth / image.naturalWidth : 1;
-      const scaleY = image.naturalHeight > 0 ? displayedHeight / image.naturalHeight : 1;
-      const pointRadius = Math.max(1.5, Math.min(3.5, displayedWidth / 420));
-      const thinWidth = Math.max(1.0, displayedWidth / 700);
-      const mainWidth = Math.max(1.4, displayedWidth / 520);
-
-      const frame = currentFrame();
-      const frameNumber = frame.frame_number;
-      const tracks = selectedTracks();
-      const scaledPoints = points => points.map(([x, y]) => [x * scaleX, y * scaleY]);
-      const historyWindow = 10;
-      const futureWindow = 10;
-
-      if (showAllTracks.checked && currentTrackValue !== 'all') {{
-        const others = currentSequence().tracks.filter(track => String(track.track_id) !== currentTrackValue);
-        for (const track of others) {{
-          const pts = scaledPoints(
-            track.points
-              .filter(point => Math.abs(point.frame_number - frameNumber) <= historyWindow)
-              .map(point => point.center)
-          );
-          drawPolyline(ctx, pts, '#6b7280', thinWidth, 0.24);
-        }}
-      }}
-
-      for (const track of tracks) {{
-        const allPastPoints = track.points.filter(point => point.frame_number <= frameNumber);
-        const localPastPoints = allPastPoints.filter(point => point.frame_number >= frameNumber - historyWindow);
-        const past = scaledPoints(localPastPoints.map(point => point.center));
-        const full = scaledPoints(track.points.map(point => point.center));
-        if (showFutureTrack.checked) {{
-          drawPolyline(ctx, full, '#80ed99', mainWidth, 0.55);
-        }}
-        drawPolyline(ctx, past, '#4cc9f0', mainWidth + 0.4, 0.95);
-        drawPoints(ctx, past, '#4cc9f0', pointRadius, 0.95);
-
-        const exact = track.points.find(point => point.frame_number === frameNumber);
-        if (exact) {{
-          drawBox(ctx, exact.bbox, scaleX, scaleY, '#ffffff');
-          const scaledCurrent = scaledPoints([exact.center])[0];
-          drawPoints(ctx, [scaledCurrent], '#ffffff', pointRadius + 1.25, 1);
-          drawCrosshair(ctx, scaledCurrent, '#ffffff');
-        }}
-
-        if (!showPredictions.checked || tracks.length !== 1) {{
-          continue;
-        }}
-        const evaluation = DATA.evaluation_lookup[predictionKey(track.track_id, frameNumber)];
-        if (!evaluation) {{
-          continue;
-        }}
-        const anchor = past.length ? past[past.length - 1] : null;
-        if (anchor) {{
-          const targetFuture = scaledPoints(evaluation.target_future);
-          const targetFutureBoxes = evaluation.target_future_bboxes || [];
-          const predictedFuture = scaledPoints(evaluation.predicted_future);
-          drawDashedPolyline(ctx, [anchor, ...targetFuture], '#ffd166', mainWidth, 0.95);
-          drawPoints(ctx, targetFuture, '#ffd166', pointRadius, 0.95);
-          targetFutureBoxes.forEach(bbox => drawBox(ctx, bbox, scaleX, scaleY, '#ffd166'));
-          drawDashedPolyline(ctx, [anchor, ...predictedFuture], '#ff6b6b', mainWidth, 0.95);
-          drawPoints(ctx, predictedFuture, '#ff6b6b', pointRadius, 0.95);
-          predictedFuture.forEach((_, index) => {{
-            const predictedBox = centerToBox(evaluation.predicted_future[index], evaluation.current_bbox);
-            drawBox(ctx, predictedBox, scaleX, scaleY, '#ff6b6b');
-          }});
-        }}
-      }}
-    }}
-
-    function renderFrame() {{
-      const sequence = currentSequence();
-      const frame = currentFrame();
-      viewerTitle.textContent = `${{sequence.sequence_key}}`;
-      viewerFrame.textContent = `frame ${{frame.frame_number}}`;
-      const nextSrc = frame.image_src;
-      if (frameImage.getAttribute('src') !== nextSrc) {{
-        frameImage.dataset.loadState = 'loading';
-        frameImage.onload = () => {{
-          frameImage.dataset.loadState = 'loaded';
-          renderOverlay();
-          updateStats();
-        }};
-        frameImage.onerror = () => {{
-          frameImage.dataset.loadState = 'error';
-          const ctx = overlay.getContext('2d');
-          overlay.width = frameImage.clientWidth || 1;
-          overlay.height = frameImage.clientHeight || 1;
-          ctx.clearRect(0, 0, overlay.width, overlay.height);
-          updateStats();
-        }};
-        frameImage.src = nextSrc;
-      }} else {{
-        renderOverlay();
-      }}
-      updateStats();
-      frameSlider.value = String(currentFrameIndex);
-    }}
-
-    function stopPlayback() {{
-      if (playTimer) {{
-        clearInterval(playTimer);
-        playTimer = null;
-      }}
-      playButton.textContent = 'Play';
-    }}
-
-    function startPlayback() {{
-      stopPlayback();
-      playTimer = setInterval(() => {{
-        const maxIndex = currentSequence().frames.length - 1;
-        currentFrameIndex = currentFrameIndex >= maxIndex ? 0 : currentFrameIndex + 1;
-        renderFrame();
-      }}, Number(speedSelect.value));
-      playButton.textContent = 'Pause';
-    }}
-
-    sequenceSelect.addEventListener('change', () => {{
-      stopPlayback();
-      currentSequenceIndex = Number(sequenceSelect.value);
-      currentFrameIndex = 0;
-      populateTracks();
-      configureFrameSlider();
-      renderFrame();
-    }});
-
-    trackSelect.addEventListener('change', () => {{
-      currentTrackValue = trackSelect.value;
-      renderFrame();
-    }});
-
-    frameSlider.addEventListener('input', () => {{
-      currentFrameIndex = Number(frameSlider.value);
-      renderFrame();
-    }});
-
-    playButton.addEventListener('click', () => {{
-      if (playTimer) {{
-        stopPlayback();
-      }} else {{
-        startPlayback();
-      }}
-    }});
-
-    speedSelect.addEventListener('change', () => {{
-      if (playTimer) {{
-        startPlayback();
-      }}
-    }});
-
-    showAllTracks.addEventListener('change', renderFrame);
-    showPredictions.addEventListener('change', renderFrame);
-    showFutureTrack.addEventListener('change', renderFrame);
-    window.addEventListener('resize', () => {{
-      if (frameImage.dataset.loadState === 'loaded') {{
-        renderOverlay();
-        updateStats();
-      }}
-    }});
-
-    populateSequences();
-    populateTracks();
-    configureFrameSlider();
-    renderFrame();
-  </script>
-</body>
-</html>
-"""
+    template = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    html = template.replace("%DATA_JSON%", json.dumps(payload))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(html)
+    output_path.write_text(html, encoding="utf-8")
     return {
         "sequence_count": len(sequences),
         "frame_count": payload["summary"]["frame_count"],
@@ -722,42 +164,52 @@ def main() -> None:
     )
     parser.add_argument(
         "--reconciled-annotations",
-        default="/Users/kappasutra/MT7/annotations/instances_reconciled.json",
+        required=True,
         help="Path to the reconciled COCO annotations file.",
     )
     parser.add_argument(
         "--trajectories",
-        default="/Users/kappasutra/MT7/annotations/drone_trajectories.json",
+        required=True,
         help="Path to the derived trajectory dataset.",
     )
     parser.add_argument(
         "--frames-root",
-        default="/Users/kappasutra/MT7/Frames",
+        required=True,
         help="Root directory containing real image frames.",
     )
     parser.add_argument(
         "--evaluation",
-        default="/Users/kappasutra/MT7/annotations/predictor_evaluation.json",
+        default=None,
         help="Optional predictor evaluation JSON path.",
     )
     parser.add_argument(
         "--output",
-        default="/Users/kappasutra/MT7/annotations/live_trajectory_view.html",
+        required=True,
         help="Path to write the live trajectory HTML viewer.",
     )
+    parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
     args = parser.parse_args()
 
-    summary = export_live_viewer(
-        reconciled_annotations_path=Path(args.reconciled_annotations),
-        trajectories_path=Path(args.trajectories),
-        frames_root=Path(args.frames_root),
-        output_path=Path(args.output),
-        evaluation_path=Path(args.evaluation) if args.evaluation else None,
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s: %(message)s",
     )
 
-    print("Live trajectory viewer summary")
+    try:
+        summary = export_live_viewer(
+            reconciled_annotations_path=Path(args.reconciled_annotations),
+            trajectories_path=Path(args.trajectories),
+            frames_root=Path(args.frames_root),
+            output_path=Path(args.output),
+            evaluation_path=Path(args.evaluation) if args.evaluation else None,
+        )
+    except ValueError as exc:
+        logger.error("%s", exc)
+        raise SystemExit(1) from None
+
+    logger.info("Live trajectory viewer summary")
     for key, value in summary.items():
-        print(f"{key}: {value}")
+        logger.info("%s: %s", key, value)
 
 
 if __name__ == "__main__":

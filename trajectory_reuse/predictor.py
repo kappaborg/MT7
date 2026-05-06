@@ -11,6 +11,40 @@ from .models import PredictionMode, TrajectoryPoint, TrajectoryPrediction
 
 logger = logging.getLogger(__name__)
 
+# Outlier rejection thresholds
+OUTLIER_SCORE_THRESHOLD = 4.5   # MAD-normalised score above which a step is an outlier
+OUTLIER_STEP_MULTIPLE = 2.5     # step must also exceed this multiple of the median step
+
+# State estimation
+VELOCITY_WINDOW_SIZE = 6        # number of recent points used to estimate velocity
+
+# Rollout
+DRONE_VELOCITY_DAMPING = 0.995  # per-step velocity decay for drones
+DEFAULT_VELOCITY_DAMPING = 0.99 # per-step velocity decay for other object types
+STEP_CONF_START = 0.92          # confidence at step 1 of the rollout
+STEP_CONF_DECAY = 0.03          # confidence drop per additional step
+STEP_CONF_MIN = 0.25            # floor for per-step confidence
+
+# Confidence scoring
+CONF_BASE = 0.35                # floor contribution independent of history/smoothness
+CONF_HISTORY_WEIGHT = 0.3       # weight of history-length factor
+CONF_SMOOTHNESS_WEIGHT = 0.35   # weight of trajectory smoothness factor
+TURN_PENALTY_SCALE = 2.5        # normalisation divisor for turn-rate penalty
+MAX_TURN_PENALTY = 0.25         # cap on turn-rate confidence penalty
+OUTLIER_PENALTY_PER_POINT = 0.08  # confidence penalty per removed outlier
+MAX_OUTLIER_PENALTY = 0.24      # cap on outlier confidence penalty
+FORECAST_DECAY_PER_STEP = 0.01  # confidence decay per predicted step
+MAX_FORECAST_DECAY = 0.12       # cap on forecast-horizon decay
+
+# Intention inference thresholds
+HOVER_SPEED_THRESHOLD = 0.4     # px/step; below this the object is considered hovering
+HOVER_ACCEL_THRESHOLD = 0.2     # px/step²; below this the object is truly stationary
+TURN_RATE_THRESHOLD = 0.15      # rad/step; beyond this the object is turning
+ACCEL_THRESHOLD = 0.8           # px/step²; above this the object is accelerating
+
+# Turn-rate clamping
+MAX_TURN_RATE = 1.5             # rad/step; absolute cap on estimated turn rate
+
 
 class ReusableTrajectoryPredictor:
     """
@@ -64,6 +98,7 @@ class ReusableTrajectoryPredictor:
         object_type: str = "object",
         context: Optional[Dict] = None,
     ) -> Optional[TrajectoryPrediction]:
+        """Return a TrajectoryPrediction for the given history, or None if history is too short."""
         start_time = time.perf_counter()
 
         normalized = self._normalize_trajectory(trajectory)
@@ -130,12 +165,14 @@ class ReusableTrajectoryPredictor:
         return prediction
 
     def cleanup_old_tracks(self, active_track_ids: List[int]) -> None:
+        """Remove cached state for tracks not in active_track_ids."""
         active = set(active_track_ids)
         stale_ids = [track_id for track_id in self.track_cache if track_id not in active]
         for track_id in stale_ids:
             del self.track_cache[track_id]
 
     def get_performance_metrics(self) -> Dict[str, float]:
+        """Return timing and count statistics; avg_prediction_time_ms is 0.0 if no predictions made."""
         avg_time = (
             sum(self.prediction_times_ms) / len(self.prediction_times_ms)
             if self.prediction_times_ms
@@ -186,7 +223,7 @@ class ReusableTrajectoryPredictor:
                 is_outlier = step > typical_step * 3.0
             else:
                 score = abs(step - typical_step) / (deviation + 1e-6)
-                is_outlier = score > 4.5 and step > typical_step * 2.5
+                is_outlier = score > OUTLIER_SCORE_THRESHOLD and step > typical_step * OUTLIER_STEP_MULTIPLE
             if is_outlier:
                 removed += 1
                 continue
@@ -214,7 +251,7 @@ class ReusableTrajectoryPredictor:
         points: Sequence[Tuple[float, float]],
         provided_velocity: Tuple[float, float],
     ) -> Dict[str, float]:
-        recent_points = list(points[-6:])
+        recent_points = list(points[-VELOCITY_WINDOW_SIZE:])
         velocities: List[Tuple[float, float]] = []
 
         for index in range(1, len(recent_points)):
@@ -273,7 +310,7 @@ class ReusableTrajectoryPredictor:
             return []
 
         max_speed = self._speed_cap(object_type, context)
-        damping = 0.995 if object_type == "drone" else 0.99
+        damping = DRONE_VELOCITY_DAMPING if object_type == "drone" else DEFAULT_VELOCITY_DAMPING
         steps = max(1, int(self.prediction_horizon / self.dt))
 
         x = state["x"]
@@ -308,7 +345,7 @@ class ReusableTrajectoryPredictor:
             x += vx * self.dt
             y += vy * self.dt
 
-            step_confidence = max(0.25, 0.92 - (step - 1) * 0.03)
+            step_confidence = max(STEP_CONF_MIN, STEP_CONF_START - (step - 1) * STEP_CONF_DECAY)
             points.append(
                 TrajectoryPoint(
                     timestamp=timestamp + step * self.dt,
@@ -342,11 +379,11 @@ class ReusableTrajectoryPredictor:
         )
         smoothness = 1.0 / (1.0 + (step_variation / (avg_step + 1e-6)))
 
-        turn_penalty = min(abs(state["turn_rate"]) / 2.5, 0.25)
-        outlier_penalty = min(removed_outliers * 0.08, 0.24)
-        forecast_decay = 1.0 - min(len(predicted_points) * 0.01, 0.12)
+        turn_penalty = min(abs(state["turn_rate"]) / TURN_PENALTY_SCALE, MAX_TURN_PENALTY)
+        outlier_penalty = min(removed_outliers * OUTLIER_PENALTY_PER_POINT, MAX_OUTLIER_PENALTY)
+        forecast_decay = 1.0 - min(len(predicted_points) * FORECAST_DECAY_PER_STEP, MAX_FORECAST_DECAY)
 
-        confidence = (0.35 + 0.3 * history_factor + 0.35 * smoothness) * forecast_decay
+        confidence = (CONF_BASE + CONF_HISTORY_WEIGHT * history_factor + CONF_SMOOTHNESS_WEIGHT * smoothness) * forecast_decay
         confidence -= turn_penalty
         confidence -= outlier_penalty
 
@@ -364,13 +401,13 @@ class ReusableTrajectoryPredictor:
         turn_rate = state["turn_rate"]
         acceleration = state["acceleration_magnitude"]
 
-        if speed < 0.4:
-            return "hover" if acceleration < 0.2 else "stationary"
-        if turn_rate > 0.15:
+        if speed < HOVER_SPEED_THRESHOLD:
+            return "hover" if acceleration < HOVER_ACCEL_THRESHOLD else "stationary"
+        if turn_rate > TURN_RATE_THRESHOLD:
             return "turn_left"
-        if turn_rate < -0.15:
+        if turn_rate < -TURN_RATE_THRESHOLD:
             return "turn_right"
-        if acceleration > 0.8:
+        if acceleration > ACCEL_THRESHOLD:
             return "accelerating"
         return "straight"
 
@@ -398,7 +435,7 @@ class ReusableTrajectoryPredictor:
 
         weights = list(range(1, len(angle_deltas) + 1))
         turn_rate = self._weighted_average(angle_deltas, weights)
-        return max(-1.5, min(1.5, turn_rate))
+        return max(-MAX_TURN_RATE, min(MAX_TURN_RATE, turn_rate))
 
     def _speed_cap(self, object_type: str, context: Dict) -> float:
         configured = context.get("max_speed")

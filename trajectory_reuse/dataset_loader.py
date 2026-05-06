@@ -69,21 +69,54 @@ def parse_frame_name(file_name: str) -> Optional[Dict[str, object]]:
 
 
 def load_coco_dataset(annotations_path: Path) -> Dict:
-    with annotations_path.open() as file:
-        return json.load(file)
+    """Load and validate a COCO-format annotation JSON file."""
+    try:
+        with annotations_path.open() as file:
+            data = json.load(file)
+    except FileNotFoundError:
+        raise ValueError(f"Annotations file not found: {annotations_path}") from None
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in {annotations_path}: {exc}") from None
+
+    missing = {"images", "annotations", "categories"} - data.keys()
+    if missing:
+        raise ValueError(
+            f"{annotations_path} is missing required COCO keys: {', '.join(sorted(missing))}. "
+            "Expected top-level keys: images, annotations, categories."
+        )
+
+    for idx, annotation in enumerate(data["annotations"]):
+        bbox = annotation.get("bbox")
+        if bbox is None or len(bbox) != 4:
+            ann_id = annotation.get("id", idx)
+            raise ValueError(
+                f"Annotation id={ann_id} has invalid bbox {bbox!r}. "
+                "Expected exactly 4 values: [x, y, width, height]."
+            )
+
+    return data
 
 
 def build_frame_records(
     annotations_path: Path,
     frames_root: Path,
     category_filter: Optional[Sequence[str]] = None,
+    modality_offsets: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> List[FrameRecord]:
+    """
+    Build FrameRecord list from a COCO annotations file.
+
+    modality_offsets maps modality name (e.g. "IR") to a (dx, dy) correction
+    added to every detection centre for that modality before trajectory linking.
+    The bbox field is left unchanged — it is used only for display.
+    """
     data = load_coco_dataset(annotations_path)
     categories = {
         int(category["id"]): str(category.get("name", category["id"]))
         for category in data.get("categories", [])
     }
     allowed_categories = set(category_filter or [])
+    offsets: Dict[str, Tuple[float, float]] = modality_offsets or {}
 
     annotations_by_image_id: Dict[int, List[Dict]] = {}
     for annotation in data.get("annotations", []):
@@ -99,16 +132,24 @@ def build_frame_records(
             continue
 
         image_id = int(image["id"])
+        modality = str(parsed["modality"])
+        offset_x, offset_y = offsets.get(modality, (0.0, 0.0))
+
         detections: List[DetectionRecord] = []
         for annotation in annotations_by_image_id.get(image_id, []):
             bbox = tuple(float(value) for value in annotation["bbox"][:4])
+            raw_center = bbox_xywh_to_center(bbox)
+            corrected_center: Tuple[float, float] = (
+                raw_center[0] + offset_x,
+                raw_center[1] + offset_y,
+            )
             detections.append(
                 DetectionRecord(
                     annotation_id=int(annotation["id"]),
                     category_id=int(annotation["category_id"]),
                     category_name=categories.get(int(annotation["category_id"]), str(annotation["category_id"])),
                     bbox=bbox,  # type: ignore[arg-type]
-                    center=bbox_xywh_to_center(bbox),
+                    center=corrected_center,
                     area=float(annotation.get("area", bbox[2] * bbox[3])),
                     attributes=dict(annotation.get("attributes", {})),
                 )

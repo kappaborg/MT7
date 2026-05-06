@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 from pathlib import Path
 from statistics import mean, median
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .predictor import ReusableTrajectoryPredictor
+
+logger = logging.getLogger(__name__)
 
 
 def _distance(point_a: Sequence[float], point_b: Sequence[float]) -> float:
@@ -106,7 +109,9 @@ def evaluate_trajectory_dataset(
     forecast_steps = max(1, int(prediction_horizon / dt))
 
     samples: List[Dict] = []
-    for sequence in data.get("sequences", []):
+    all_sequences = data.get("sequences", [])
+    total_sequences = len(all_sequences)
+    for seq_idx, sequence in enumerate(all_sequences, 1):
         sequence_key = str(sequence["sequence_key"])
         for track in sequence.get("tracks", []):
             point_count = len(track.get("points", []))
@@ -122,6 +127,13 @@ def evaluate_trajectory_dataset(
                 )
                 if sample is not None:
                     samples.append(sample)
+        if total_sequences > 0 and (
+            seq_idx == total_sequences or seq_idx % max(1, total_sequences // 10) == 0
+        ):
+            logger.info(
+                "Evaluated %d/%d sequences (%.0f%%)",
+                seq_idx, total_sequences, seq_idx / total_sequences * 100,
+            )
 
     ade_values = [sample["ade"] for sample in samples]
     fde_values = [sample["fde"] for sample in samples]
@@ -161,12 +173,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--trajectories",
-        default="/Users/kappasutra/MT7/annotations/drone_trajectories.json",
+        required=True,
         help="Path to the derived trajectory dataset JSON file.",
     )
     parser.add_argument(
         "--output",
-        default="/Users/kappasutra/MT7/annotations/predictor_evaluation.json",
+        required=True,
         help="Path to write the predictor evaluation JSON file.",
     )
     parser.add_argument(
@@ -205,22 +217,32 @@ def main() -> None:
         default=3,
         help="Maximum allowed frame-number gap inside an evaluation window.",
     )
+    parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
     args = parser.parse_args()
 
-    summary = evaluate_trajectory_dataset(
-        trajectories_path=Path(args.trajectories),
-        output_path=Path(args.output),
-        dt=args.dt,
-        prediction_horizon=args.prediction_horizon,
-        min_history=args.min_history,
-        max_history=args.max_history,
-        history_size=args.history_size,
-        max_window_gap=args.max_window_gap,
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s: %(message)s",
     )
 
-    print("Predictor evaluation summary")
+    try:
+        summary = evaluate_trajectory_dataset(
+            trajectories_path=Path(args.trajectories),
+            output_path=Path(args.output),
+            dt=args.dt,
+            prediction_horizon=args.prediction_horizon,
+            min_history=args.min_history,
+            max_history=args.max_history,
+            history_size=args.history_size,
+            max_window_gap=args.max_window_gap,
+        )
+    except ValueError as exc:
+        logger.error("%s", exc)
+        raise SystemExit(1) from None
+
+    logger.info("Predictor evaluation summary")
     for key, value in summary.items():
-        print(f"{key}: {value}")
+        logger.info("%s: %s", key, value)
 
 
 if __name__ == "__main__":
