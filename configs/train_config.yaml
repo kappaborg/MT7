@@ -1,0 +1,53 @@
+# ── Deliverable 4 — Training configuration for MLTrajectoryPredictor ──────────
+# Run with:
+#   python3 train_ml_predictor.py --config configs/train_config.yaml
+
+model:
+  obs_len: 8              # observation window (frames) — matches prepare_training_data
+  pred_len: 4             # prediction horizon (frames)
+  d_model: 32             # transformer hidden dimension (scale up to 64 when using public datasets)
+  nhead: 2                # attention heads  (scale to 4 with larger d_model)
+  num_encoder_layers: 2   # transformer layers (scale to 3-4 with more data)
+  K: 4                    # trajectory hypotheses (scale to 6 with more data)
+  dropout: 0.2            # dropout (reduce to 0.1 when dataset > 50k windows)
+  type_embed_dim: 8       # object-type embedding dimension
+  mod_embed_dim: 4        # EO/IR modality embedding dimension
+
+training:
+  epochs: 120
+  batch_size: 64
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  # minADE (WTA) + NLL regularization weights
+  lambda_nll: 0.15        # weight on NLL loss term; prevent hypothesis collapse
+  lambda_fde: 0.5         # extra weight on final-step error
+  # Learning rate schedule: linear warmup → cosine annealing
+  warmup_epochs: 8
+  min_lr: 1.0e-5          # cosine annealing lower bound
+  # Gradient clipping — important for transformer stability
+  grad_clip_norm: 1.0
+  # Early stopping
+  early_stopping_patience: 20   # epochs without val_ade improvement
+  early_stopping_min_delta: 0.1 # minimum improvement to count as progress
+  device: auto            # "auto" | "cuda" | "cpu" | "mps"
+  seed: 42
+
+data:
+  train_path: output/training_tensors/train.pt
+  val_path:   output/training_tensors/val.pt
+  test_path:  output/training_tensors/test.pt
+  num_workers: 0          # set to 4 on Linux; keep 0 on macOS to avoid fork issues
+  pin_memory: false       # set true when using CUDA
+
+logging:
+  backend: tensorboard    # "tensorboard" | "wandb" | "none"
+  log_dir: output/runs    # TensorBoard log directory
+  # Weights & Biases (only used when backend: wandb)
+  wandb_project: mt7-drone-trajectory
+  wandb_entity: ""        # leave empty to use default W&B entity
+  log_every_n_steps: 10
+
+checkpointing:
+  output_dir: output/checkpoints
+  save_top_k: 3           # keep the k best checkpoints by val_ade
+  monitor: val_ade        # metric to minimise for best-checkpoint selection

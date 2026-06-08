@@ -1,0 +1,40 @@
+{
+  "obs_len": 8,
+  "pred_len": 4,
+  "stride": 1,
+  "fps": 30.0,
+  "augmented": true,
+  "seed": 42,
+  "object_type_map": {
+    "drone": 0,
+    "pedestrian": 1,
+    "cyclist": 2,
+    "vehicle": 3,
+    "emergency": 4,
+    "unknown": 5
+  },
+  "modality_map": {
+    "EO": 0,
+    "IR": 1
+  },
+  "source": "output/drone_trajectories.json",
+  "split_counts": {
+    "train": 4550,
+    "val": 1326,
+    "test": 307
+  },
+  "feature_dim": 17,
+  "feature_layout": [
+    "x_norm",
+    "y_norm",
+    "vx",
+    "vy",
+    "ax",
+    "ay",
+    "det_confidence",
+    "bbox_area_norm",
+    "metric_scale_flag",
+    "type_embed_0..7",
+    "modality_embed_0..3"
+  ]
+}

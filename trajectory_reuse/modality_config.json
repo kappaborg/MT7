@@ -1,10 +1,48 @@
 {
   "EO": {
     "max_gap": 8,
-    "max_distance": 150.0
+    "max_distance": 150.0,
+    "center_offset_x": 0.0,
+    "center_offset_y": 0.0,
+    "camera": {
+      "model": "DJI Matrice 4T",
+      "sensors": {
+        "wide":      {"focal_mm": 24,  "fov_deg": 82, "aperture": "f/1.7"},
+        "mid_tele":  {"focal_mm": 70,  "fov_deg": 35, "aperture": "f/2.8"},
+        "telephoto": {"focal_mm": 168, "fov_deg": 15, "aperture": "f/2.8"}
+      },
+      "live_resolution": [1920, 1080],
+      "fps": 30,
+      "link": "DJI O4 Enterprise",
+      "link_latency_ms": 130
+    }
   },
   "IR": {
     "max_gap": 6,
-    "max_distance": 90.0
+    "max_distance": 90.0,
+    "center_offset_x": 0.0,
+    "center_offset_y": 0.0,
+    "camera": {
+      "model": "DJI Matrice 4T Thermal",
+      "sensor_type": "Uncooled VOx microbolometer",
+      "resolution_native": [640, 512],
+      "resolution_ultra": [1280, 1024],
+      "pixel_pitch_um": 12,
+      "fov_deg": 45,
+      "focal_mm": 53,
+      "aperture": "f/1.0",
+      "fps": 30,
+      "netd_mk": 50,
+      "temp_range_high_gain_c": [-20, 150],
+      "temp_range_low_gain_c": [0, 550]
+    }
+  },
+  "laser": {
+    "model": "DJI Matrice 4T Rangefinder",
+    "max_range_m": 1800,
+    "accuracy_formula": "±(0.2 + 0.0015 * D) meters",
+    "measurement_hz": 1,
+    "blind_zone_m": 1,
+    "note": "1Hz only — use for px/meter scale calibration, not per-frame depth"
   }
 }

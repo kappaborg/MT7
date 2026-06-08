@@ -1,0 +1,27 @@
+{
+  "scorer": {
+    "_speed_susp":   8.0,
+    "_speed_conf":   15.0,
+    "_approach_deg": 60.0,
+    "_swarm_n":      3,
+    "_swarm_r":      300.0,
+    "_conf_thresh":  0.70,
+    "_adsb_thr":     150.0,
+    "_evasion_k":    3.5,
+    "_night_scale":  1.4
+  },
+  "zones": [
+    {
+      "name": "primary_asset",
+      "center": [960, 540],
+      "radius_px": 200,
+      "note": "Replace center with the pixel coordinates of your protected asset in the camera frame"
+    },
+    {
+      "name": "landing_pad",
+      "center": [400, 300],
+      "radius_px": 100,
+      "note": "Secondary exclusion zone"
+    }
+  ]
+}
